@@ -17,6 +17,8 @@ use sui_types::multiaddr::Multiaddr;
 use sui_types::sui_system_state::SuiSystemState;
 use sui_types::{error::SuiError, transaction::*};
 
+use crate::authority_client::tonic::IntoRequest;
+use sui_network::tonic::metadata::KeyAndValueRef;
 use sui_network::tonic::transport::Channel;
 use sui_types::messages_grpc::{
     HandleCertificateResponseV2, HandleTransactionResponse, ObjectInfoRequest, ObjectInfoResponse,
@@ -29,12 +31,14 @@ pub trait AuthorityAPI {
     async fn handle_transaction(
         &self,
         transaction: Transaction,
+        metadata: Option<tonic::metadata::MetadataMap>,
     ) -> Result<HandleTransactionResponse, SuiError>;
 
     /// Execute a certificate.
     async fn handle_certificate_v2(
         &self,
         certificate: CertifiedTransaction,
+        metadata: Option<tonic::metadata::MetadataMap>,
     ) -> Result<HandleCertificateResponseV2, SuiError>;
 
     /// Handle Object information requests for this account.
@@ -103,9 +107,24 @@ impl AuthorityAPI for NetworkAuthorityClient {
     async fn handle_transaction(
         &self,
         transaction: Transaction,
+        metadata: Option<tonic::metadata::MetadataMap>,
     ) -> Result<HandleTransactionResponse, SuiError> {
+        let request = transaction.into_request();
+        if let Some(metadata) = metadata {
+            metadata
+                .iter()
+                .for_each(|key_and_value| match key_and_value {
+                    KeyAndValueRef::Ascii(key, value) => {
+                        request.metadata_mut().insert(key.clone(), value.clone());
+                    }
+                    KeyAndValueRef::Binary(key, value) => {
+                        request.metadata_mut().insert(key.clone(), value.clone());
+                    }
+                });
+        }
+
         self.client()
-            .transaction(transaction)
+            .transaction(request)
             .await
             .map(tonic::Response::into_inner)
             .map_err(Into::into)
@@ -115,10 +134,16 @@ impl AuthorityAPI for NetworkAuthorityClient {
     async fn handle_certificate_v2(
         &self,
         certificate: CertifiedTransaction,
+        metadata: Option<tonic::metadata::MetadataMap>,
     ) -> Result<HandleCertificateResponseV2, SuiError> {
+        let request = certificate.into_request();
+        metadata.into_iter().for_each(|(k, v)| {
+            request.metadata_mut().insert(k, v);
+        });
+
         let response = self
             .client()
-            .handle_certificate_v2(certificate.clone())
+            .handle_certificate_v2(request)
             .await
             .map(tonic::Response::into_inner);
 
