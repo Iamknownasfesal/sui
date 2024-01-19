@@ -114,7 +114,7 @@ impl Event {
     /// UTC timestamp in milliseconds since epoch (1/1/1970)
     async fn timestamp(&self) -> Result<Option<DateTime>, Error> {
         if let Some(stored) = &self.stored {
-            Ok(DateTime::from_ms(stored.timestamp_ms).ok())
+            Ok(Some(DateTime::from_ms(stored.timestamp_ms)?))
         } else {
             Ok(None)
         }
@@ -184,36 +184,37 @@ impl Event {
 
         for stored in results {
             let cursor = stored.cursor().encode_cursor();
-            let sender_bytes = stored
-                .senders
-                .first()
-                .ok_or(Error::Internal("No senders found for event".to_string()))?
-                .clone()
-                .ok_or(Error::Internal("No senders found for event".to_string()))?;
-            let package_id = ObjectID::from_bytes(&stored.package)
-                .map_err(|e| Error::Internal(e.to_string()))?;
-            let type_ = parse_sui_struct_tag(&stored.event_type)
-                .map_err(|e| Error::Internal(e.to_string()))?;
-            let transaction_module =
-                Identifier::from_str(&stored.module).map_err(|e| Error::Internal(e.to_string()))?;
-            let contents = stored.bcs.clone();
-            conn.edges.push(Edge::new(
-                cursor,
-                Event {
-                    stored: Some(stored),
-                    native: NativeEvent {
-                        sender: NativeSuiAddress::from_bytes(&sender_bytes)
-                            .map_err(|e| Error::Internal(e.to_string()))?,
-                        package_id,
-                        transaction_module,
-                        type_,
-                        contents,
-                    },
-                },
-            ));
+            conn.edges
+                .push(Edge::new(cursor, Self::try_from_stored_event(stored)?));
         }
 
         Ok(conn)
+    }
+
+    fn try_from_stored_event(stored: StoredEvent) -> Result<Event, Error> {
+        let Some(Some(sender_bytes)) = stored.senders.first() else {
+            return Err(Error::Internal("No senders found for event".to_string()));
+        };
+        let sender = NativeSuiAddress::from_bytes(sender_bytes)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+
+        let package_id =
+            ObjectID::from_bytes(&stored.package).map_err(|e| Error::Internal(e.to_string()))?;
+        let type_ =
+            parse_sui_struct_tag(&stored.event_type).map_err(|e| Error::Internal(e.to_string()))?;
+        let transaction_module =
+            Identifier::from_str(&stored.module).map_err(|e| Error::Internal(e.to_string()))?;
+        let contents = stored.bcs.clone();
+        Ok(Event {
+            stored: Some(stored),
+            native: NativeEvent {
+                sender,
+                package_id,
+                transaction_module,
+                type_,
+                contents,
+            },
+        })
     }
 
     pub(crate) fn try_from_stored_transaction(

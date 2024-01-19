@@ -1,13 +1,11 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::types::execution_result::ExecutedTransaction;
 use crate::{
-    error::Error, types::event::Event, types::execution_result::ExecutionResult,
+    error::Error, types::execution_result::ExecutionResult,
     types::transaction_block_effects::TransactionBlockEffects,
 };
 use async_graphql::*;
-use either::Either;
 use fastcrypto::encoding::Encoding;
 use fastcrypto::{encoding::Base64, traits::ToFromBytes};
 use sui_json_rpc_types::SuiTransactionBlockResponseOptions;
@@ -81,7 +79,6 @@ impl Mutation {
         let transaction = Transaction::from_generic_sig_data(tx_data, sigs);
         let options = SuiTransactionBlockResponseOptions::new()
             .with_events()
-            .with_balance_changes()
             .with_raw_input()
             .with_raw_effects();
 
@@ -90,9 +87,7 @@ impl Mutation {
             .execute_transaction_block(
                 transaction,
                 options,
-                // This needs to be WaitForLocalExecution because we need the transaction effects.
-                // TODO: make it possible to execute without waiting for local execution?
-                Some(ExecuteTransactionRequestType::WaitForLocalExecution),
+                Some(ExecuteTransactionRequestType::WaitForEffectsCert),
             )
             .await
             // TODO: use proper error type as this could be a client error or internal error
@@ -110,25 +105,18 @@ impl Mutation {
         let events = result
             .events
             .ok_or(Error::Internal(
-                "No events are returned from tranasction execution".to_string(),
+                "No events are returned from transaction execution".to_string(),
             ))?
             .data
             .into_iter()
-            .map(|e| Event {
-                stored: None,
-                native: NativeEvent {
-                    package_id: e.package_id,
-                    transaction_module: e.transaction_module,
-                    sender: e.sender,
-                    type_: e.type_,
-                    contents: e.bcs,
-                },
+            .map(|e| NativeEvent {
+                package_id: e.package_id,
+                transaction_module: e.transaction_module,
+                sender: e.sender,
+                type_: e.type_,
+                contents: e.bcs,
             })
             .collect();
-
-        let balance_changes = result.balance_changes.ok_or(Error::Internal(
-            "No balance changes are returned from tranasction execution".to_string(),
-        ))?;
 
         Ok(ExecutionResult {
             errors: if result.errors.is_empty() {
@@ -136,14 +124,10 @@ impl Mutation {
             } else {
                 Some(result.errors)
             },
-            effects: TransactionBlockEffects {
-                tx_data: Either::Right(ExecutedTransaction {
-                    sender_signed_data,
-                    raw_effects: raw_effects.clone(),
-                    balance_changes,
-                    events,
-                }),
+            effects: TransactionBlockEffects::Executed {
+                tx_data: sender_signed_data,
                 native: raw_effects,
+                events,
             },
         })
     }
